@@ -6,6 +6,8 @@ import { nanoid } from "nanoid";
 import { db } from "@waitlistkit/db";
 import { waitlists, subscribers, referralEvents, emailQueue } from "@waitlistkit/db";
 import { eq, and, max, sql } from "@waitlistkit/db";
+import { checkRateLimit } from "@/lib/rate-limit";
+import { isDisposableEmail } from "@/lib/email-validation";
 
 interface RouteParams {
   params: { slug: string };
@@ -17,25 +19,26 @@ const joinSchema = z.object({
   ref_code: z.string().length(8).optional(),
 });
 
-// Simple in-memory rate limiter: 5 signups/min per IP
-const rateLimiter = new Map<string, { count: number; resetAt: number }>();
+// CORS headers for cross-origin embed access
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+};
 
-function checkRateLimit(ip: string): boolean {
-  const now = Date.now();
-  const entry = rateLimiter.get(ip);
-  if (!entry || entry.resetAt < now) {
-    rateLimiter.set(ip, { count: 1, resetAt: now + 60_000 });
-    return true;
-  }
-  if (entry.count >= 5) return false;
-  entry.count += 1;
-  return true;
+// Handle preflight
+export async function OPTIONS() {
+  return new NextResponse(null, { status: 204, headers: CORS_HEADERS });
 }
 
 export async function POST(req: NextRequest, { params }: RouteParams) {
   const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
-  if (!checkRateLimit(ip)) {
-    return NextResponse.json({ error: "Rate limit exceeded. Try again in a minute." }, { status: 429 });
+  // 5 join attempts per IP per minute
+  if (!checkRateLimit(`join:ip:${ip}`, 5, 60_000)) {
+    return NextResponse.json(
+      { error: "Rate limit exceeded. Try again in a minute." },
+      { status: 429, headers: CORS_HEADERS }
+    );
   }
 
   const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
@@ -47,15 +50,23 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
     .where(and(eq(waitlists.slug, params.slug), eq(waitlists.isActive, true)))
     .limit(1);
 
-  if (!wl) return NextResponse.json({ error: "Waitlist not found or inactive" }, { status: 404 });
+  if (!wl) return NextResponse.json({ error: "Waitlist not found or inactive" }, { status: 404, headers: CORS_HEADERS });
 
   const body = await req.json() as unknown;
   const parsed = joinSchema.safeParse(body);
   if (!parsed.success) {
-    return NextResponse.json({ error: "Invalid input", issues: parsed.error.issues }, { status: 400 });
+    return NextResponse.json({ error: "Invalid input", issues: parsed.error.issues }, { status: 400, headers: CORS_HEADERS });
   }
 
   const { email, name, ref_code } = parsed.data;
+
+  // Reject disposable email domains
+  if (isDisposableEmail(email)) {
+    return NextResponse.json(
+      { error: "Disposable email addresses are not allowed." },
+      { status: 422, headers: CORS_HEADERS }
+    );
+  }
 
   // Check email uniqueness per waitlist
   const [existing] = await db
@@ -65,7 +76,7 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
     .limit(1);
 
   if (existing) {
-    return NextResponse.json({ error: "Email already registered for this waitlist" }, { status: 409 });
+    return NextResponse.json({ error: "Email already registered for this waitlist" }, { status: 409, headers: CORS_HEADERS });
   }
 
   // Resolve referrer
@@ -152,6 +163,6 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
       referral_code: referralCode,
       referral_link: referralLink,
     },
-    { status: 201 }
+    { status: 201, headers: CORS_HEADERS }
   );
 }

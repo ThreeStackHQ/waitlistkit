@@ -3,10 +3,21 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@waitlistkit/db";
 import { waitlists, subscribers, emailQueue } from "@waitlistkit/db";
-import { eq, and, gt, gte, lte, sql } from "@waitlistkit/db";
+import { eq, and, gte, lte, sql } from "@waitlistkit/db";
 
 interface RouteParams {
   params: { slug: string };
+}
+
+// CORS headers for cross-origin embed access
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+};
+
+export async function OPTIONS() {
+  return new NextResponse(null, { status: 204, headers: CORS_HEADERS });
 }
 
 /**
@@ -18,7 +29,7 @@ interface RouteParams {
 export async function POST(req: NextRequest, { params }: RouteParams) {
   const { searchParams } = new URL(req.url);
   const token = searchParams.get("token");
-  if (!token) return NextResponse.json({ error: "token is required" }, { status: 400 });
+  if (!token) return NextResponse.json({ error: "token is required" }, { status: 400, headers: CORS_HEADERS });
 
   // Find waitlist
   const [wl] = await db
@@ -27,7 +38,7 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
     .where(eq(waitlists.slug, params.slug))
     .limit(1);
 
-  if (!wl) return NextResponse.json({ error: "Waitlist not found" }, { status: 404 });
+  if (!wl) return NextResponse.json({ error: "Waitlist not found" }, { status: 404, headers: CORS_HEADERS });
 
   // Find subscriber by referral code (used as confirm token)
   const [sub] = await db
@@ -36,10 +47,10 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
     .where(and(eq(subscribers.referralCode, token), eq(subscribers.waitlistId, wl.id)))
     .limit(1);
 
-  if (!sub) return NextResponse.json({ error: "Invalid token" }, { status: 404 });
+  if (!sub) return NextResponse.json({ error: "Invalid token" }, { status: 404, headers: CORS_HEADERS });
 
   if (sub.confirmed) {
-    return NextResponse.json({ message: "Already confirmed", position: sub.position });
+    return NextResponse.json({ message: "Already confirmed", position: sub.position }, { headers: CORS_HEADERS });
   }
 
   // Confirm the subscriber
@@ -91,5 +102,5 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
     }
   }
 
-  return NextResponse.json({ message: "Email confirmed", position: sub.position });
+  return NextResponse.json({ message: "Email confirmed", position: sub.position }, { headers: CORS_HEADERS });
 }

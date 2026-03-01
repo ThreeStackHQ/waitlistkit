@@ -6,6 +6,7 @@ import bcrypt from "bcryptjs";
 import { db } from "@waitlistkit/db";
 import { users } from "@waitlistkit/db";
 import { eq } from "@waitlistkit/db";
+import { checkRateLimit } from "@/lib/rate-limit";
 
 const schema = z.object({
   email: z.string().email(),
@@ -14,6 +15,12 @@ const schema = z.object({
 });
 
 export async function POST(req: NextRequest) {
+  // Rate limit: 10 signup attempts per IP per 15 minutes to prevent spam/enumeration
+  const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+  if (!checkRateLimit(`signup:ip:${ip}`, 10, 15 * 60_000)) {
+    return NextResponse.json({ error: "Too many signup attempts. Try again later." }, { status: 429 });
+  }
+
   try {
     const body = await req.json() as unknown;
     const parsed = schema.safeParse(body);

@@ -7,9 +7,10 @@ import { eq, and, asc } from "@waitlistkit/db";
 import { sendWelcomeEmail, sendRankUpEmail } from "@/lib/emails";
 
 export async function POST(req: NextRequest) {
-  // Simple security: require a secret header or allow internal cron calls
+  // Require CRON_SECRET to be set and match — never allow unauthenticated access
   const cronSecret = req.headers.get("x-cron-secret");
-  if (process.env.CRON_SECRET && cronSecret !== process.env.CRON_SECRET) {
+  const expectedSecret = process.env.CRON_SECRET;
+  if (!expectedSecret || cronSecret !== expectedSecret) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
