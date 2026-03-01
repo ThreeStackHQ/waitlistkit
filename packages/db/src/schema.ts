@@ -1,66 +1,169 @@
-import { pgTable, text, uuid, timestamp, integer, boolean, index } from "drizzle-orm/pg-core";
+import {
+  pgTable,
+  pgEnum,
+  text,
+  uuid,
+  timestamp,
+  integer,
+  boolean,
+  index,
+  uniqueIndex,
+} from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+export const planEnum = pgEnum("plan", ["free", "starter", "growth", "scale"]);
+export const emailTypeEnum = pgEnum("email_type", ["welcome", "rank_up", "digest"]);
+export const emailStatusEnum = pgEnum("email_status", ["pending", "sent", "failed"]);
+
+// ─── Tables ──────────────────────────────────────────────────────────────────
 
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
   email: text("email").notNull().unique(),
   name: text("name"),
-  passwordHash: text("password_hash").notNull(),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
+  passwordHash: text("password_hash"),
+  plan: planEnum("plan").notNull().default("free"),
+  stripeCustomerId: text("stripe_customer_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const waitlists = pgTable("waitlists", {
   id: uuid("id").primaryKey().defaultRandom(),
-  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  name: text("name").notNull(),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
   slug: text("slug").notNull().unique(),
-  apiKey: text("api_key").notNull().unique(), // wk_live_...
-  headline: text("headline").notNull().default("Join the waitlist"),
+  name: text("name").notNull(),
   description: text("description"),
-  buttonText: text("button_text").notNull().default("Join Waitlist"),
-  accentColor: text("accent_color").notNull().default("#8b5cf6"),
-  referralEnabled: boolean("referral_enabled").notNull().default(true),
-  totalSignups: integer("total_signups").notNull().default(0),
+  logoUrl: text("logo_url"),
+  primaryColor: text("primary_color").notNull().default("#8b5cf6"),
   isActive: boolean("is_active").notNull().default(true),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
+  totalSubscribers: integer("total_subscribers").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
-export const signups = pgTable("signups", {
+export const subscribers = pgTable(
+  "subscribers",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    waitlistId: uuid("waitlist_id")
+      .notNull()
+      .references(() => waitlists.id, { onDelete: "cascade" }),
+    email: text("email").notNull(),
+    name: text("name"),
+    referralCode: text("referral_code").notNull().unique(),
+    referredBy: uuid("referred_by"), // FK → subscribers(id), set after insert to avoid circular
+    position: integer("position").notNull(),
+    totalReferrals: integer("total_referrals").notNull().default(0),
+    confirmed: boolean("confirmed").notNull().default(false),
+    joinedAt: timestamp("joined_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    waitlistEmailUniq: uniqueIndex("subscribers_waitlist_email_idx").on(t.waitlistId, t.email),
+    referralCodeIdx: index("subscribers_referral_code_idx").on(t.referralCode),
+  })
+);
+
+export const referralEvents = pgTable("referral_events", {
   id: uuid("id").primaryKey().defaultRandom(),
-  waitlistId: uuid("waitlist_id").notNull().references(() => waitlists.id, { onDelete: "cascade" }),
-  email: text("email").notNull(),
-  name: text("name"),
-  referralCode: text("referral_code").notNull().unique(), // their own code to share
-  referredBy: text("referred_by"), // code of who referred them
-  referralCount: integer("referral_count").notNull().default(0),
-  position: integer("position").notNull(), // position in queue
-  status: text("status").notNull().default("waiting"), // waiting, invited, joined
-  invitedAt: timestamp("invited_at"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-}, (t) => ({
-  waitlistEmailUniq: index("signups_waitlist_email_idx").on(t.waitlistId, t.email),
-}));
+  waitlistId: uuid("waitlist_id")
+    .notNull()
+    .references(() => waitlists.id, { onDelete: "cascade" }),
+  referrerId: uuid("referrer_id")
+    .notNull()
+    .references(() => subscribers.id, { onDelete: "cascade" }),
+  referredId: uuid("referred_id")
+    .notNull()
+    .references(() => subscribers.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const emailQueue = pgTable("email_queue", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  subscriberId: uuid("subscriber_id")
+    .notNull()
+    .references(() => subscribers.id, { onDelete: "cascade" }),
+  emailType: emailTypeEnum("email_type").notNull(),
+  status: emailStatusEnum("status").notNull().default("pending"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  sentAt: timestamp("sent_at", { withTimezone: true }),
+});
 
 export const subscriptions = pgTable("subscriptions", {
   id: uuid("id").primaryKey().defaultRandom(),
-  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  tier: text("tier").notNull().default("free"),
-  status: text("status").notNull().default("active"),
-  stripeCustomerId: text("stripe_customer_id"),
+  userId: uuid("user_id")
+    .notNull()
+    .unique()
+    .references(() => users.id, { onDelete: "cascade" }),
   stripeSubscriptionId: text("stripe_subscription_id"),
-  currentPeriodEnd: timestamp("current_period_end"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
+  status: text("status").notNull().default("active"),
+  plan: planEnum("plan").notNull().default("free"),
+  currentPeriodEnd: timestamp("current_period_end", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
+
+// ─── Relations ────────────────────────────────────────────────────────────────
+
+export const usersRelations = relations(users, ({ many, one }) => ({
+  waitlists: many(waitlists),
+  subscription: one(subscriptions, {
+    fields: [users.id],
+    references: [subscriptions.userId],
+  }),
+}));
 
 export const waitlistsRelations = relations(waitlists, ({ one, many }) => ({
   user: one(users, { fields: [waitlists.userId], references: [users.id] }),
-  signups: many(signups),
-}));
-export const signupsRelations = relations(signups, ({ one }) => ({
-  waitlist: one(waitlists, { fields: [signups.waitlistId], references: [waitlists.id] }),
+  subscribers: many(subscribers),
+  referralEvents: many(referralEvents),
+  emailQueue: many(emailQueue),
 }));
 
+export const subscribersRelations = relations(subscribers, ({ one, many }) => ({
+  waitlist: one(waitlists, { fields: [subscribers.waitlistId], references: [waitlists.id] }),
+  emailQueue: many(emailQueue),
+  referralsMade: many(referralEvents, { relationName: "referrer" }),
+  referredByEvent: many(referralEvents, { relationName: "referred" }),
+}));
+
+export const referralEventsRelations = relations(referralEvents, ({ one }) => ({
+  waitlist: one(waitlists, { fields: [referralEvents.waitlistId], references: [waitlists.id] }),
+  referrer: one(subscribers, {
+    fields: [referralEvents.referrerId],
+    references: [subscribers.id],
+    relationName: "referrer",
+  }),
+  referred: one(subscribers, {
+    fields: [referralEvents.referredId],
+    references: [subscribers.id],
+    relationName: "referred",
+  }),
+}));
+
+export const emailQueueRelations = relations(emailQueue, ({ one }) => ({
+  subscriber: one(subscribers, {
+    fields: [emailQueue.subscriberId],
+    references: [subscribers.id],
+  }),
+}));
+
+export const subscriptionsRelations = relations(subscriptions, ({ one }) => ({
+  user: one(users, { fields: [subscriptions.userId], references: [users.id] }),
+}));
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
 export type User = typeof users.$inferSelect;
+export type NewUser = typeof users.$inferInsert;
 export type Waitlist = typeof waitlists.$inferSelect;
-export type Signup = typeof signups.$inferSelect;
-export type NewSignup = typeof signups.$inferInsert;
+export type NewWaitlist = typeof waitlists.$inferInsert;
+export type Subscriber = typeof subscribers.$inferSelect;
+export type NewSubscriber = typeof subscribers.$inferInsert;
+export type ReferralEvent = typeof referralEvents.$inferSelect;
+export type NewReferralEvent = typeof referralEvents.$inferInsert;
+export type EmailQueue = typeof emailQueue.$inferSelect;
+export type NewEmailQueue = typeof emailQueue.$inferInsert;
+export type Subscription = typeof subscriptions.$inferSelect;
+export type NewSubscription = typeof subscriptions.$inferInsert;
